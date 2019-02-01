@@ -1,0 +1,380 @@
+---
+title: "Relatório - Datathon de 12/01/2019"
+output:
+  rmarkdown::html_vignette:
+    fig_width: 5
+    fig_height: 3.5
+    fig_cap: TRUE
+    toc: yes
+    css: css/style.css
+biblio-style: "apalike"
+link-citations: yes
+header-includes:
+  - \usepackage{mathtools}
+editor_options: 
+  chunk_output_type: console
+---
+
+<style type="text/css">
+#TOC {
+  margin: 0 270px;
+  width: 425px;
+}
+</style>
+</style>
+<div class="outer">
+<img src="./logo.png"  width="120px" display="block" align="bottom">
+</div>
+<b>
+<center>
+<a href="https://www.meetup.com/pt-BR/R-Ladies-Sao-Paulo"> 
+R-Ladies São Paulo</a><br/>
+</center>
+
+GitHub = https://github.com/brunaw/rladies_sp_datathon
+</b>
+</div>
+</div>
+
+```{r setup, include=FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE,
+                      message = FALSE, warning = FALSE,
+                      fig.align = 'center')
+```
+
+Análise dos dados do [ProUni](http://siteprouni.mec.gov.br/), 
+disponíveis em: https://brasil.io/home
+
+```{r}
+library(tidyverse)
+da <- readr::read_csv("data/prouni.csv")
+```
+
+Análise unidimensional
+
+```{r}
+da %>% 
+  mutate_if(is.character, as.factor) %>% 
+  skimr::skim()
+```
+
+Pela análise univariada identificamos que;
+
+1. Não sabemos com certeza o que significa o missing nas colunas que
+começam com `bolsa_`.
+
+Cursos por estado
+
+```{r}
+da %>% 
+  count(uf_busca, sort = TRUE) %>% 
+  mutate(prop = scales::percent(n/sum(n))) %>% 
+  knitr::kable()
+```
+
+Vagas por estado
+
+```{r}
+distrbolsa <- da %>% 
+  gather(tipo_bolsa, bolsa, starts_with("bolsa_")) %>%
+  # replace_na(list(bolsa = 0)) %>% 
+  # head() %>% as.data.frame()
+  group_by(uf_busca, tipo_bolsa) %>% 
+  summarise(n_bolsas = sum(bolsa, na.rm = TRUE)) %>% 
+  # arrange(desc(n_bolsas)) %>% 
+  mutate(prop = n_bolsas/sum(n_bolsas))
+```
+
+```{r}
+distrbolsa %>% 
+  summarise(n_bolsas = sum(n_bolsas)) %>% 
+  ## opcao 1: pacote forcats
+  # mutate(uf_busca = fct_reorder(uf_busca, n_bolsas, .desc = TRUE)) %>%
+  ## opcao 2: base
+  mutate(uf_busca = reorder(uf_busca, n_bolsas, 
+                            FUN = function(x) -mean(x))) %>%
+  ggplot(aes(x = uf_busca, y = n_bolsas)) +
+  geom_col(fill = "plum", colour = "black",
+           alpha = 0.6) +
+  theme_bw()
+
+```
+
+Agora por população:
+
+```{r}
+ibge_pop <- readr::read_csv("data/IBGE_pop.csv") %>% 
+  group_by(uf) %>% 
+  summarise(pop = sum(pop_dou_2017))
+
+distrbolsa %>% 
+  summarise(n_bolsas = sum(n_bolsas)) %>% 
+  inner_join(ibge_pop, c("uf_busca" = "uf")) %>% 
+  mutate(razao = n_bolsas / pop * 100000,
+         uf_busca = fct_reorder(uf_busca, razao, .desc = TRUE)) %>% 
+  filter(uf_busca != "DF") %>% 
+  ggplot(aes(x = uf_busca, y = razao)) +
+  geom_col(fill = "plum", colour = "black",
+           alpha = 0.6) +
+  theme_bw()
+```
+
+Grafico de propoção por tipo de bolsa:
+
+```{r}
+distrbolsa %>% 
+  ungroup() %>% 
+  mutate(uf_busca = reorder(uf_busca, n_bolsas, 
+                            FUN = function(x) -mean(x))) %>%
+  ggplot(aes(x = uf_busca, y = prop)) +
+  geom_col(fill = "plum", colour = "black",
+           alpha = 0.6, position = "dodge") +
+  facet_wrap(~tipo_bolsa) +
+  theme_bw()
+```
+
+Gráfico da razão por tipo de bolsa:
+
+```{r}
+distrbolsa %>% 
+  ungroup() %>% 
+  inner_join(ibge_pop, c("uf_busca" = "uf")) %>% 
+  mutate(razao = n_bolsas / pop * 100000) %>% 
+  filter(uf_busca != "DF") %>% 
+  ggplot(aes(x = uf_busca, y = razao)) +
+  geom_col(fill = "plum", colour = "black",
+           alpha = 0.6, position = "dodge") +
+  facet_wrap(~tipo_bolsa) +
+  theme_bw()
+```
+
+Criando um mapa:
+
+```{r}
+# carrega o mapa por estado
+mapa <- brazilmaps::get_brmap("State")
+
+# siglas e codigos das ufs
+ufs <- abjData::cadmun %>% 
+  distinct(UFCOD, uf, regiao)
+
+# total de bolsas por uf
+bolsas_uf <- distrbolsa %>% 
+  summarise(n_bolsas = sum(n_bolsas))
+
+# funcao que faz um mapa para um tipo de bolsa especifico
+faz_mapa <- function(tp_bolsa) {
+  mapa %>% 
+    as_tibble() %>% 
+    # fizemos isso aqui pois nao tem as siglas das UFs no mapa
+    inner_join(ufs, c("State" = "UFCOD")) %>% 
+    # juntando mapa com a base do Prouni
+    inner_join(distrbolsa, c("uf" = "uf_busca")) %>% 
+    # juntando com IBGE
+    inner_join(ibge_pop, c("uf")) %>%
+    filter(tipo_bolsa == tp_bolsa) %>% 
+    mutate(razao = n_bolsas / pop * 100000,
+           # classificando razao em categorias
+           razao = cut(razao, quantile(razao, 0:5/5), 
+                       include.lowest = TRUE)) %>% 
+    ggplot(aes(fill = razao)) +
+    # essa funcao gera o mapa
+    geom_sf(aes(geometry = geometry),
+      colour = "black", size = 0.1) +
+    # escala de cores viridis
+    scale_fill_viridis_d(begin = 0.3, end = 0.9, option = "A", 
+                         direction = -1) +
+    theme_minimal() +
+    theme(axis.text = element_blank()) +
+    ggtitle(tp_bolsa)
+}
+
+grafs <- unique(distrbolsa$tipo_bolsa) %>% 
+  purrr::map(faz_mapa)
+
+# gera todos os mapas
+library(patchwork)
+purrr::reduce(grafs, `+`)
+```
+
+Proporção de bolsas em cada estado por tipo de bolsa:
+
+```{r}
+da %>% 
+  gather(tipo_bolsa, bolsa, starts_with("bolsa_")) %>%
+  mutate(primeiro_nome = str_extract(nome, "[[:alpha:]]+(?= ?)")) %>% 
+  mutate(nome = primeiro_nome %>% 
+           fct_infreq() %>% 
+           fct_lump(n = 9, other_level = "Outros")) %>% 
+  group_by(tipo_bolsa, uf_busca, nome) %>% 
+  summarise(n_bolsas = sum(bolsa, na.rm = TRUE)) %>% 
+  mutate(prop = n_bolsas/sum(n_bolsas)) %>% 
+  ggplot(aes(x = uf_busca, y = prop, fill = nome)) +
+  geom_col(colour = "black") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(type = "qual", palette = 3) +
+  facet_wrap(~tipo_bolsa) +
+  theme_minimal()
+```
+
+Proporção de bolsas por região considerando os cursos mais populares:
+```{r}
+da %>% 
+  gather(tipo_bolsa, bolsa, starts_with("bolsa_")) %>%
+  mutate(primeiro_nome = str_extract(nome, "[[:alpha:]]+(?= ?)")) %>% 
+  mutate(nome = primeiro_nome %>% 
+           fct_infreq() %>% 
+           fct_lump(n = 9, other_level = "Outros")) %>% 
+  inner_join(ufs, c("uf_busca" = "uf")) %>% 
+  group_by(regiao, nome) %>% 
+  summarise(media_mensalidade = mean(mensalidade)) %>% 
+  ungroup() %>% 
+  mutate(regiao = fct_reorder(regiao, media_mensalidade)) %>% 
+  ggplot(aes(x = regiao, y = media_mensalidade)) +
+  geom_col(fill = "plum", colour = "black",
+           alpha = 0.6) +
+  facet_wrap(~nome) +
+  theme_bw()
+```
+
+Notas por região considerando os cursos mais populares:
+
+```{r}
+da %>% 
+  gather(tipo_nota, nota, starts_with("nota_")) %>%
+  mutate(primeiro_nome = str_extract(nome, "[[:alpha:]]+(?= ?)")) %>% 
+  mutate(nome = primeiro_nome %>% 
+           fct_infreq() %>% 
+           fct_lump(n = 9, other_level = "Outros")) %>% 
+  inner_join(ufs, c("uf_busca" = "uf")) %>% 
+  group_by(regiao, nome) %>% 
+  summarise(media_mensalidade = mean(mensalidade),
+            media_nota = mean(nota, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  mutate(regiao = fct_reorder(regiao, media_nota)) %>% 
+  ggplot(aes(x = regiao, y = media_nota)) +
+  geom_col(fill = "plum", colour = "black",
+           alpha = 0.6) +
+  facet_wrap(~nome) +
+  theme_bw()
+```
+
+Bolsas por cidade
+
+```{r}
+da %>% 
+  gather(tipo_bolsa, bolsa, starts_with("bolsa_")) %>% 
+  group_by(cidade_busca) %>% 
+  summarise(bolsas = sum(bolsa, na.rm = TRUE)) %>% 
+  arrange(desc(bolsas))
+```
+
+Mapa que mostra municípios que tem e não tem cursos na nossa base:
+
+```{r}
+# carrega o mapa por estado
+mapa <- brazilmaps::get_brmap("City") %>% 
+  as_tibble() %>% 
+  mutate(nome = abjutils::rm_accent(nome),
+         nome = str_remove_all(nome, "\"")) %>% 
+  inner_join(ufs, c("State" = "UFCOD"))
+
+bd <- da %>% 
+  select(City = cidade_busca, uf = uf_busca) %>% 
+  distinct() %>% 
+  mutate(nome = City %>% 
+           toupper() %>% 
+           str_replace_all("\"", " ") %>% 
+           str_squish())
+
+mapa %>% 
+  left_join(bd, c("nome", "uf")) %>% 
+  mutate(tem = !is.na(City.y)) %>% 
+  ggplot(aes(fill = tem)) +
+  geom_sf(aes(geometry = geometry),
+          colour = "black", size = 0.1)
+bd %>% 
+  anti_join(mapa, c("nome", "uf"))
+
+```
+
+
+Modelo para tentar explicar a mensalidade a partir da nota:
+
+```{r}
+dados <- da %>% 
+  tibble::rowid_to_column() %>% 
+  mutate(primeiro_nome = str_extract(nome, "[[:alpha:]]+(?= ?)")) %>% 
+  mutate(nome = primeiro_nome %>% 
+           fct_infreq() %>% 
+           fct_lump(n = 9, other_level = "Outros")) %>% 
+  gather(tipo_nota, nota, starts_with("nota_")) %>%
+  group_by(rowid) %>% 
+  mutate(media_nota = mean(nota, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  distinct(rowid, .keep_all = TRUE) %>% 
+  inner_join(ufs, c("uf_busca" = "uf"))
+
+modelo <- lm(mensalidade ~ nota + regiao * nome, data = dados)
+summary(modelo)
+
+modelo_gam <- mgcv::gam(mensalidade ~ s(nota) + regiao * nome, 
+                        data = dados)
+plot(modelo_gam)
+summary(modelo_gam)
+```
+
+Em gráfico:
+
+```{r}
+dados %>% 
+  ggplot(aes(x = nota, y = mensalidade, colour = regiao)) +
+  geom_smooth() +
+  facet_wrap(~nome, scales = "free") +
+  theme_bw()
+```
+
+Redes-Neurais:
+
+```{r, eval = FALSE}
+# instalar python e keras antes :)
+library(keras)
+
+dados2 <- dados %>% 
+  select(nota, mensalidade) %>% 
+  na.omit() %>% 
+  scale()
+
+input <- layer_input(c(1))
+output <- input %>% 
+  layer_dense(400) %>% 
+  layer_activation("relu")  %>% 
+  layer_dense(400) %>% 
+  layer_activation("relu")  %>% 
+  layer_dense(1)
+
+model <- keras_model(input, output)
+
+model %>% 
+  compile(
+    loss = "mse",
+    optimizer = "sgd",
+    metrics = "mse"
+  )
+
+model %>% 
+  fit(x = dados2[,1],
+      y = dados2[,2], 
+      epochs = 50, 
+      batch_size = 3000,
+      validation_split = 0.8)
+
+y <- predict(model, x = sort(dados2[,1]))
+
+plot(dados2[,1], dados2[,2])
+lines(sort(dados2[,1]), y[,1], col = 2)
+```
+
+
+
+
